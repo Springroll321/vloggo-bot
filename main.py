@@ -102,7 +102,7 @@ class Client(discord.Client):
         remaining_text = self.format_vlogger_list(remaining)
 
         if self.current_pick:
-            pick_text = f"{self.current_pick.name} ({self.current_pick.id})"
+            pick_text = f"{self.current_pick.name}"
             pick_id = self.current_pick.id
         else:
             pick_text = "No one picked yet"
@@ -110,7 +110,7 @@ class Client(discord.Client):
 
         await channel.send(
             f"📅 Date: {today_str}\n"
-            f"🎬 Today's vlogger: {pick_text} ({pick_id})\n"
+            f"🎬 Today's vlogger: {pick_text} \n"
             f"✅ Already gone this cycle: {gone_text}\n"
             f"⏳ Still remaining: {remaining_text}"
         )
@@ -132,7 +132,7 @@ class Client(discord.Client):
     async def on_message(self, message):
         if message.author == self.user:
             return
-
+        
         if message.content.startswith('!help'):
             help_text = (
                 "**Vlog Bot Commands:**\n"
