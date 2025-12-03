@@ -28,15 +28,22 @@ class Client(discord.Client):
     # -------------------- Helper Functions --------------------
 
     async def get_channel_safe(self):
-        """Return the channel object or None if invalid."""
         channel = self.get_channel(CHANNEL_ID)
         if isinstance(channel, discord.TextChannel):
             return channel
         return None
 
-    def format_vlogger_list(self, users):
-        """Return formatted string 'Name (ID)' for a list of Members."""
-        return ", ".join([f"{u.name} ({u.id})" for u in users]) if users else "None"
+    def extract_members_from_line(self, line, guild):
+        """Extract Member objects from a line of mentions without using regex."""
+        members = []
+        for part in line.split():
+            if part.startswith("<@"):
+                cleaned = part.replace("<@!", "").replace("<@", "").replace(">", "")
+                if cleaned.isdigit():
+                    member = guild.get_member(int(cleaned))
+                    if member:
+                        members.append(member)
+        return members
 
     async def delete_last_pick_message(self, channel):
         """Delete the message from the previous pick day."""
@@ -54,63 +61,53 @@ class Client(discord.Client):
                     continue
 
     async def recover_state_from_messages(self, channel):
-        """Recover the bot state from the last pick message in the channel."""
+        """Recover the bot state from the last pick message using mentions."""
         try:
-            async for msg in channel.history(limit=20):
-                if "Today's vlogger:" in msg.content:
-                    lines = msg.content.splitlines()
+            async for msg in channel.history(limit=30):
+                if "Today's vlogger:" not in msg.content:
+                    continue
 
-                    # Parse last pick date
-                    self.last_pick_date = datetime.strptime(
-                        lines[0].split(":")[1].strip(), "%Y-%m-%d"
-                    ).date()
+                lines = msg.content.splitlines()
+                self.last_pick_date = datetime.strptime(
+                    lines[0].split(":")[1].strip(), "%Y-%m-%d"
+                ).date()
 
-                    guild = self.guilds[0]  # assumes single guild
+                guild = self.guilds[0]
 
-                    # Parse current pick
-                    user_id = int(lines[1].split("(")[1].strip(")"))
-                    self.current_pick = guild.get_member(user_id)
+                # Current pick
+                current_list = self.extract_members_from_line(lines[1], guild)
+                self.current_pick = current_list[0] if current_list else None
 
-                    # Parse gone and remaining
-                    def parse_users(line):
-                        users = []
-                        if ": None" not in line:
-                            for part in line.split(":")[1].split(","):
-                                uid = int(part.split("(")[1].strip(")"))
-                                member = guild.get_member(uid)
-                                if member:
-                                    users.append(member)
-                        return users
+                # Already gone this cycle
+                gone_members = self.extract_members_from_line(lines[2], guild)
 
-                    gone = parse_users(lines[2])
-                    remaining = parse_users(lines[3])
+                # Remaining
+                remaining_members = self.extract_members_from_line(lines[3], guild)
 
-                    self.remaining_picks = remaining
-                    self.vloggers = gone + remaining
-                    print(f"Recovered state: {len(self.vloggers)} vloggers, current pick: {self.current_pick}")
-                    break
+                self.vloggers = gone_members + remaining_members
+                self.remaining_picks = remaining_members
+
+                print("Recovered state using mentions:")
+                print(f"Current pick: {self.current_pick}")
+                print(f"Vloggers: {[u.name for u in self.vloggers]}")
+                return
+
         except Exception as e:
-            print(f"Could not recover state from messages: {e}")
+            print(f"Could not recover state: {e}")
 
     async def send_daily_pick_message(self, channel):
-        """Send today's pick message with all details."""
+        """Send today's pick message with mentions."""
         today_str = datetime.now().strftime("%Y-%m-%d")
         gone = [v for v in self.vloggers if v not in self.remaining_picks]
         remaining = self.remaining_picks
 
-        gone_text = self.format_vlogger_list(gone)
-        remaining_text = self.format_vlogger_list(remaining)
-
-        if self.current_pick:
-            pick_text = f"{self.current_pick.name}"
-            pick_id = self.current_pick.id
-        else:
-            pick_text = "No one picked yet"
-            pick_id = "N/A"
+        gone_text = ", ".join([u.mention for u in gone]) if gone else "None"
+        remaining_text = ", ".join([u.mention for u in remaining]) if remaining else "None"
+        pick_text = self.current_pick.mention if self.current_pick else "No one picked yet"
 
         await channel.send(
             f"📅 Date: {today_str}\n"
-            f"🎬 Today's vlogger: {pick_text} \n"
+            f"🎬 Today's vlogger: {pick_text}\n"
             f"✅ Already gone this cycle: {gone_text}\n"
             f"⏳ Still remaining: {remaining_text}"
         )
@@ -123,7 +120,6 @@ class Client(discord.Client):
         if not channel:
             return
 
-        # Recover state from last pick message
         await self.recover_state_from_messages(channel)
 
         if not self.daily_task:
@@ -132,7 +128,7 @@ class Client(discord.Client):
     async def on_message(self, message):
         if message.author == self.user:
             return
-        
+
         if message.content.startswith('!help'):
             help_text = (
                 "**Vlog Bot Commands:**\n"
@@ -190,7 +186,7 @@ class Client(discord.Client):
 
         while not self.is_closed():
             now = datetime.now()
-            next_pick_time = datetime.combine(now.date(), datetime.min.time())
+            next_pick_time = datetime.combine(now.date(), datetime.min.time()) + timedelta(hours=6)
             if now >= next_pick_time:
                 next_pick_time += timedelta(days=1)
 
@@ -201,7 +197,6 @@ class Client(discord.Client):
                 await channel.send('No one has joined the vlogs yet today!')
                 continue
 
-            # Reset remaining picks if all have been picked
             if not self.remaining_picks:
                 self.remaining_picks = self.vloggers.copy()
 
@@ -213,7 +208,6 @@ class Client(discord.Client):
                 self.current_pick = random.choice(self.remaining_picks)
                 self.remaining_picks.remove(self.current_pick)
 
-                # Delete previous day's pick
                 await self.delete_last_pick_message(channel)
 
                 self.last_pick_date = today
